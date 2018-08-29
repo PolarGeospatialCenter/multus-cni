@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	testutils "github.com/intel/multus-cni/testing"
+	"github.com/intel/multus-cni/types"
 
 	"github.com/containernetworking/cni/pkg/skel"
 
@@ -276,4 +277,187 @@ var _ = Describe("k8sclient operations", func() {
 		Expect(len(delegates)).To(Equal(0))
 		Expect(err).To(MatchError(fmt.Sprintf("GetK8sNetwork: failed getting the delegate: cniConfigFromNetworkResource: err in getCNIConfigFromFile: Error loading CNI config file %s: error parsing configuration: invalid character 'a' looking for beginning of value", net2Name)))
 	})
+
+	It("retrieves defaultNetworks from kubernetes when no annotation is present", func() {
+		fakePod := testutils.NewFakePod("testpod", "")
+		args := &skel.CmdArgs{
+			Args: fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s", fakePod.ObjectMeta.Name, fakePod.ObjectMeta.Namespace),
+		}
+
+		fKubeClient := testutils.NewFakeKubeClient()
+		fKubeClient.AddPod(fakePod)
+		fKubeClient.AddNetConfig(fakePod.ObjectMeta.Namespace, "net1", `{
+	"name": "net1",
+	"type": "mynet",
+	"cniVersion": "0.2.0"
+}`)
+		fKubeClient.AddNetConfig(fakePod.ObjectMeta.Namespace, "net2", `{
+	"name": "net2",
+	"type": "mynet2",
+	"cniVersion": "0.2.0"
+}`)
+		fKubeClient.AddNetConfig("other-ns", "net3", `{
+	"name": "net3",
+	"type": "mynet3",
+	"cniVersion": "0.2.0"
+}`)
+
+		kubeClient, err := GetK8sClient("", fKubeClient)
+		Expect(err).NotTo(HaveOccurred())
+		k8sArgs, err := GetK8sArgs(args)
+		Expect(err).NotTo(HaveOccurred())
+		fNetConf := &types.NetConf{
+			KubeDefaultNetworks: []*types.NetworkSelectionElement{
+				&types.NetworkSelectionElement{
+					Name:      "net1",
+					Namespace: fakePod.Namespace,
+				},
+				&types.NetworkSelectionElement{
+					Name:      "net3",
+					Namespace: "other-ns",
+				},
+			},
+		}
+
+		delegates, err := GetK8sDefaultNetwork(kubeClient, fNetConf.KubeDefaultNetworks, tmpDir)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fKubeClient.PodCount).To(Equal(0))
+		Expect(fKubeClient.NetCount).To(Equal(2))
+
+		Expect(len(delegates)).To(Equal(2))
+		Expect(delegates[0].Conf.Name).To(Equal("net1"))
+		Expect(delegates[0].Conf.Type).To(Equal("mynet"))
+		Expect(delegates[1].Conf.Name).To(Equal("net3"))
+		Expect(delegates[1].Conf.Type).To(Equal("mynet3"))
+
+		numLoaded, _, err := TryLoadK8sDelegates(k8sArgs, fNetConf, kubeClient)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fKubeClient.PodCount).To(Equal(1))
+		Expect(fKubeClient.NetCount).To(Equal(4))
+
+		Expect(numLoaded).To(Equal(2))
+	})
+
+	It("retrieves annotated networks from kubernetes when no default network list is present", func() {
+		fakePod := testutils.NewFakePod("testpod", `[
+{"name":"net1"},
+{
+  "name":"net2",
+  "ipRequest": "1.2.3.4",
+  "macRequest": "aa:bb:cc:dd:ee:ff"
+},
+{
+  "name":"net3",
+  "namespace":"other-ns"
+}
+]`)
+		args := &skel.CmdArgs{
+			Args: fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s", fakePod.ObjectMeta.Name, fakePod.ObjectMeta.Namespace),
+		}
+
+		fKubeClient := testutils.NewFakeKubeClient()
+		fKubeClient.AddPod(fakePod)
+		fKubeClient.AddNetConfig(fakePod.ObjectMeta.Namespace, "net1", `{
+	"name": "net1",
+	"type": "mynet",
+	"cniVersion": "0.2.0"
+}`)
+		fKubeClient.AddNetConfig(fakePod.ObjectMeta.Namespace, "net2", `{
+	"name": "net2",
+	"type": "mynet2",
+	"cniVersion": "0.2.0"
+}`)
+		fKubeClient.AddNetConfig("other-ns", "net3", `{
+	"name": "net3",
+	"type": "mynet3",
+	"cniVersion": "0.2.0"
+}`)
+
+		kubeClient, err := GetK8sClient("", fKubeClient)
+		Expect(err).NotTo(HaveOccurred())
+		k8sArgs, err := GetK8sArgs(args)
+		Expect(err).NotTo(HaveOccurred())
+		fNetConf := &types.NetConf{}
+
+		numLoaded, _, err := TryLoadK8sDelegates(k8sArgs, fNetConf, kubeClient)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fKubeClient.PodCount).To(Equal(1))
+		Expect(fKubeClient.NetCount).To(Equal(3))
+
+		Expect(numLoaded).To(Equal(3))
+		Expect(len(fNetConf.Delegates)).To(Equal(3))
+		Expect(fNetConf.Delegates[0].Conf.Name).To(Equal("net1"))
+		Expect(fNetConf.Delegates[0].Conf.Type).To(Equal("mynet"))
+		Expect(fNetConf.Delegates[1].Conf.Name).To(Equal("net2"))
+		Expect(fNetConf.Delegates[1].Conf.Type).To(Equal("mynet2"))
+		Expect(fNetConf.Delegates[2].Conf.Name).To(Equal("net3"))
+		Expect(fNetConf.Delegates[2].Conf.Type).To(Equal("mynet3"))
+
+	})
+
+	It("ignores default network list when pod is annotated with networks", func() {
+		fakePod := testutils.NewFakePod("testpod", `[
+{
+  "name":"net2",
+  "ipRequest": "1.2.3.4",
+  "macRequest": "aa:bb:cc:dd:ee:ff"
+},
+{
+  "name":"net3",
+  "namespace":"other-ns"
+}
+]`)
+		args := &skel.CmdArgs{
+			Args: fmt.Sprintf("K8S_POD_NAME=%s;K8S_POD_NAMESPACE=%s", fakePod.ObjectMeta.Name, fakePod.ObjectMeta.Namespace),
+		}
+
+		fKubeClient := testutils.NewFakeKubeClient()
+		fKubeClient.AddPod(fakePod)
+		fKubeClient.AddNetConfig(fakePod.ObjectMeta.Namespace, "net1", `{
+	"name": "net1",
+	"type": "mynet",
+	"cniVersion": "0.2.0"
+}`)
+		fKubeClient.AddNetConfig(fakePod.ObjectMeta.Namespace, "net2", `{
+	"name": "net2",
+	"type": "mynet2",
+	"cniVersion": "0.2.0"
+}`)
+		fKubeClient.AddNetConfig("other-ns", "net3", `{
+	"name": "net3",
+	"type": "mynet3",
+	"cniVersion": "0.2.0"
+}`)
+
+		kubeClient, err := GetK8sClient("", fKubeClient)
+		Expect(err).NotTo(HaveOccurred())
+		k8sArgs, err := GetK8sArgs(args)
+		Expect(err).NotTo(HaveOccurred())
+		fNetConf := &types.NetConf{
+			KubeDefaultNetworks: []*types.NetworkSelectionElement{
+				&types.NetworkSelectionElement{
+					Name:      "net1",
+					Namespace: fakePod.Namespace,
+				},
+				&types.NetworkSelectionElement{
+					Name:      "net3",
+					Namespace: "other-ns",
+				},
+			},
+		}
+
+		numLoaded, _, err := TryLoadK8sDelegates(k8sArgs, fNetConf, kubeClient)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fKubeClient.PodCount).To(Equal(1))
+		Expect(fKubeClient.NetCount).To(Equal(2))
+
+		Expect(numLoaded).To(Equal(2))
+		Expect(len(fNetConf.Delegates)).To(Equal(2))
+		Expect(fNetConf.Delegates[0].Conf.Name).To(Equal("net2"))
+		Expect(fNetConf.Delegates[0].Conf.Type).To(Equal("mynet2"))
+		Expect(fNetConf.Delegates[1].Conf.Name).To(Equal("net3"))
+		Expect(fNetConf.Delegates[1].Conf.Type).To(Equal("mynet3"))
+
+	})
+
 })
