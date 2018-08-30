@@ -390,27 +390,22 @@ func TryLoadK8sDelegates(k8sArgs *types.K8sArgs, conf *types.NetConf, kubeClient
 		return 0, nil, nil
 	}
 
-	defaultNetworkListPresent := len(conf.KubeDefaultNetworks) > 0
-
 	setKubeClientInfo(clientInfo, kubeClient, k8sArgs)
 	delegates, err := GetK8sNetwork(kubeClient, k8sArgs, conf.ConfDir)
 	if err != nil {
-		if _, ok := err.(*NoK8sNetworkError); !ok {
-			return 0, nil, logging.Errorf("Multus: Err in getting k8s network from pod: %v", err)
-		} else if !defaultNetworkListPresent {
+		if _, ok := err.(*NoK8sNetworkError); ok {
 			return 0, clientInfo, nil
 		}
+		return 0, nil, logging.Errorf("Multus: Err in getting k8s network from pod: %v", err)
 	}
 
-	if len(delegates) == 0 && defaultNetworkListPresent {
-		delegates, err = GetK8sDefaultNetwork(kubeClient, conf.KubeDefaultNetworks, conf.ConfDir)
-		if err != nil {
-			return 0, nil, logging.Errorf("Multus: Err in getting default k8s networks: %v", err)
+	if len(delegates) != 0 && conf.ReplaceWithKubeNetworks {
+		conf.ReplaceDelegates(delegates)
+	} else {
+
+		if err = conf.AddDelegates(delegates); err != nil {
+			return 0, nil, err
 		}
-	}
-
-	if err = conf.AddDelegates(delegates); err != nil {
-		return 0, nil, err
 	}
 
 	return len(delegates), clientInfo, nil
@@ -452,21 +447,6 @@ func GetK8sClient(kubeconfig string, kubeClient KubeClient) (KubeClient, error) 
 	}
 
 	return &defaultKubeClient{client: client}, nil
-}
-
-func GetK8sDefaultNetwork(k8sclient KubeClient, defaultNetworkList []*types.NetworkSelectionElement, confdir string) ([]*types.DelegateNetConf, error) {
-	logging.Debugf("GetK8sDefaultNetwork: %v, %v, %v", k8sclient, defaultNetworkList, confdir)
-
-	// Read all network objects referenced by 'networks'
-	var delegates []*types.DelegateNetConf
-	for _, net := range defaultNetworkList {
-		delegate, err := getKubernetesDelegate(k8sclient, net, confdir)
-		if err != nil {
-			return nil, logging.Errorf("GetK8sDefaultNetwork: failed getting the delegate: %v", err)
-		}
-		delegates = append(delegates, delegate)
-	}
-	return delegates, nil
 }
 
 func GetK8sNetwork(k8sclient KubeClient, k8sArgs *types.K8sArgs, confdir string) ([]*types.DelegateNetConf, error) {

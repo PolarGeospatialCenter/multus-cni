@@ -210,3 +210,9 @@ func (n *NetConf) AddDelegates(newDelegates []*DelegateNetConf) error {
 	n.Delegates = append(n.Delegates, newDelegates...)
 	return nil
 }
+
+// ReplaceDelegates replaces the existing delegates with the new delegates
+func (n *NetConf) ReplaceDelegates(newDelegates []*DelegateNetConf) {
+	logging.Debugf("ReplaceDelegates: %v", newDelegates)
+	n.Delegates = newDelegates
+}
