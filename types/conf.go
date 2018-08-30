@@ -211,8 +211,18 @@ func (n *NetConf) AddDelegates(newDelegates []*DelegateNetConf) error {
 	return nil
 }
 
-// ReplaceDelegates replaces the existing delegates with the new delegates
+// ReplaceDelegates replaces the existing delegates with the new delegates and set the first as master if none is set
 func (n *NetConf) ReplaceDelegates(newDelegates []*DelegateNetConf) {
 	logging.Debugf("ReplaceDelegates: %v", newDelegates)
+	masterSet := false
+	for _, delegate := range newDelegates {
+		masterSet = masterSet || delegate.MasterPlugin
+	}
+
+	if !masterSet {
+		newDelegates[0].MasterPlugin = true
+	}
+
 	n.Delegates = newDelegates
+
 }
